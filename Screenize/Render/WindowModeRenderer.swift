@@ -11,6 +11,7 @@ final class WindowModeRenderer {
     private let backgroundRenderer: BackgroundRenderer
     private let transformApplicator: WindowTransformApplicator
     private let effectApplicator: WindowEffectApplicator
+    private let isPreview: Bool
 
     // Background caching (reuse when style and size match)
     private var cachedBackground: CIImage?
@@ -19,13 +20,23 @@ final class WindowModeRenderer {
 
     // MARK: - Initialization
 
-    init(ciContext: CIContext) {
+    init(ciContext: CIContext, isPreview: Bool) {
         self.backgroundRenderer = BackgroundRenderer(ciContext: ciContext)
         self.transformApplicator = WindowTransformApplicator()
         self.effectApplicator = WindowEffectApplicator(ciContext: ciContext)
+        self.isPreview = isPreview
     }
 
     // MARK: - Public Methods
+
+    static func previewBackgroundStyle(
+        backgroundEnabled: Bool,
+        configuredStyle: BackgroundStyle,
+        isPreview: Bool
+    ) -> BackgroundStyle {
+        guard !backgroundEnabled else { return configuredStyle }
+        return .solid(isPreview ? TransparentBackgroundFallback.swiftUIColor : .clear)
+    }
 
     /// Render in window mode
     /// - Parameters:
@@ -80,8 +91,13 @@ final class WindowModeRenderer {
         }
 
         // 2. Generate the background (with caching)
+        let backgroundStyle = Self.previewBackgroundStyle(
+            backgroundEnabled: settings.backgroundEnabled,
+            configuredStyle: settings.backgroundStyle,
+            isPreview: isPreview
+        )
         let background = getOrCreateBackground(
-            style: settings.backgroundStyle,
+            style: backgroundStyle,
             outputSize: outputSize
         )
 

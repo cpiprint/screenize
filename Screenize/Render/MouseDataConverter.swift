@@ -7,10 +7,13 @@ import CoreGraphics
 /// Shared by ExportEngine and PreviewEngine
 struct MouseDataConverter {
 
-    /// Convert from a MouseDataSource (v4 event streams or legacy adapter) to render data
+    /// Convert from a MouseDataSource (v4 event streams or legacy adapter) to render data.
+    /// Mouse button events are passed through as individual down/up events (no pairing)
+    /// so that cursor press/release animation works correctly for clicks, drags, and
+    /// rapid sequences.
     static func convertFromMouseDataSource(
         _ source: MouseDataSource
-    ) -> (positions: [RenderMousePosition], clicks: [RenderClickEvent]) {
+    ) -> (positions: [RenderMousePosition], mouseButtonEvents: [RenderMouseButtonEvent]) {
         let positions = source.positions.map { pos in
             RenderMousePosition(
                 timestamp: pos.time,
@@ -19,83 +22,51 @@ struct MouseDataConverter {
                 velocity: 0
             )
         }
-        let clicks = source.clicks.map { click in
-            let clickType: ClickType = (click.clickType == .leftDown || click.clickType == .doubleClick) ? .left : .right
-            return RenderClickEvent(
+
+        let sortedClicks = source.clicks.sorted { $0.time < $1.time }
+        var buttonEvents: [RenderMouseButtonEvent] = []
+
+        for click in sortedClicks {
+            let clickType: ClickType
+            let isDown: Bool
+
+            switch click.clickType {
+            case .leftDown:
+                clickType = .left
+                isDown = true
+            case .leftUp:
+                clickType = .left
+                isDown = false
+            case .rightDown:
+                clickType = .right
+                isDown = true
+            case .rightUp:
+                clickType = .right
+                isDown = false
+            case .doubleClick:
+                // Synthesize a quick down+up pair for double-click events
+                buttonEvents.append(RenderMouseButtonEvent(
+                    timestamp: click.time,
+                    isDown: true,
+                    clickType: .left
+                ))
+                buttonEvents.append(RenderMouseButtonEvent(
+                    timestamp: click.time + 0.05,
+                    isDown: false,
+                    clickType: .left
+                ))
+                continue
+            }
+
+            buttonEvents.append(RenderMouseButtonEvent(
                 timestamp: click.time,
-                duration: 0.1,
-                x: click.position.x,
-                y: click.position.y,
+                isDown: isDown,
                 clickType: clickType
-            )
-        }
-        return (positions, clicks)
-    }
-
-    // MARK: - Legacy v2 (remove in next minor version)
-
-    /// Convert mouse recording data for rendering (without interpolation)
-    static func convert(
-        from recording: MouseRecording
-    ) -> (positions: [RenderMousePosition], clicks: [RenderClickEvent]) {
-        let boundsSize = CGSize(
-            width: recording.screenBounds.width,
-            height: recording.screenBounds.height
-        )
-
-        // DEBUG: Log mouse data conversion details
-        print("🔍 [DEBUG] MouseDataConverter: screenBounds=\(recording.screenBounds), boundsSize=\(boundsSize)")
-        for (i, pos) in recording.positions.prefix(3).enumerated() {
-            let normalized = CoordinateConverter.pixelToNormalized(
-                CGPoint(x: pos.x, y: pos.y), size: boundsSize
-            )
-            print("🔍 [DEBUG] MouseDataConverter: position[\(i)] raw=(\(pos.x), \(pos.y)) -> normalized=(\(normalized.x), \(normalized.y))")
+            ))
         }
 
-        let positions = toRenderPositions(from: recording.positions, boundsSize: boundsSize)
-        let clicks = toRenderClickEvents(from: recording.clicks, boundsSize: boundsSize)
-
-        return (positions, clicks)
-    }
-
-    /// Convert MousePosition array to RenderMousePosition array
-    static func toRenderPositions(
-        from positions: [MousePosition],
-        boundsSize: CGSize
-    ) -> [RenderMousePosition] {
-        positions.map { pos in
-            let normalized = CoordinateConverter.pixelToNormalized(
-                CGPoint(x: pos.x, y: pos.y),
-                size: boundsSize
-            )
-            return RenderMousePosition(
-                timestamp: pos.timestamp,
-                x: normalized.x,
-                y: normalized.y,
-                velocity: pos.velocity
-            )
-        }
-    }
-
-    /// Convert MouseClickEvent array to RenderClickEvent array
-    static func toRenderClickEvents(
-        from clicks: [MouseClickEvent],
-        boundsSize: CGSize
-    ) -> [RenderClickEvent] {
-        clicks.map { click in
-            let normalized = CoordinateConverter.pixelToNormalized(
-                CGPoint(x: click.x, y: click.y),
-                size: boundsSize
-            )
-            let clickType: ClickType = (click.type == .left) ? .left : .right
-            return RenderClickEvent(
-                timestamp: click.timestamp,
-                duration: click.duration,
-                x: normalized.x,
-                y: normalized.y,
-                clickType: clickType
-            )
-        }
+        // Already sorted since source was sorted by time
+        return (positions, buttonEvents)
     }
 
     // MARK: - Load and Convert
@@ -103,47 +74,37 @@ struct MouseDataConverter {
     /// Load and convert mouse data from a project (without interpolation)
     static func loadAndConvert(
         from project: ScreenizeProject
-    ) throws -> (positions: [RenderMousePosition], clicks: [RenderClickEvent]) {
-        // v4 path: load from event streams
-        if let source = loadMouseDataSourceFromEventStreams(project: project) {
-            return convertFromMouseDataSource(source)
-        }
-
-        // MARK: - Legacy v2 (remove in next minor version)
-        guard project.media.mouseDataExists else {
+    ) -> (positions: [RenderMousePosition], mouseButtonEvents: [RenderMouseButtonEvent]) {
+        guard let source = loadMouseDataSourceFromEventStreams(project: project) else {
             return ([], [])
         }
-        let recording = try MouseRecording.load(from: project.media.mouseDataURL)
-        return convert(from: recording)
+        return convertFromMouseDataSource(source)
     }
 
     /// Load and convert mouse data from a project (with interpolation)
     @MainActor
     static func loadAndConvertWithInterpolation(
         from project: ScreenizeProject,
-        frameRate: Double
-    ) throws -> (positions: [RenderMousePosition], clicks: [RenderClickEvent]) {
-        // v4 path: load from event streams
-        if let source = loadMouseDataSourceFromEventStreams(project: project) {
-            let result = convertFromMouseDataSource(source)
-            let interpolatedPositions = PreviewEngine.interpolateMousePositions(
-                result.positions,
-                outputFrameRate: frameRate
-            )
-            return (interpolatedPositions, result.clicks)
-        }
-
-        // MARK: - Legacy v2 (remove in next minor version)
-        guard project.media.mouseDataExists else {
+        frameRate: Double,
+        springConfig: SpringCursorConfig? = nil
+    ) -> (positions: [RenderMousePosition], mouseButtonEvents: [RenderMouseButtonEvent]) {
+        guard let source = loadMouseDataSourceFromEventStreams(project: project) else {
             return ([], [])
         }
-        let recording = try MouseRecording.load(from: project.media.mouseDataURL)
-        let result = convert(from: recording)
+        let result = convertFromMouseDataSource(source)
+        let interpolationFrameRate = max(frameRate, 60.0)
         let interpolatedPositions = PreviewEngine.interpolateMousePositions(
             result.positions,
-            outputFrameRate: frameRate
+            outputFrameRate: interpolationFrameRate,
+            springConfig: springConfig,
+            // Uses first continuous segment's transforms (generator produces exactly one)
+            cameraTransforms: project.timeline.cameraTrack?.segments
+                .first(where: { $0.isContinuous }).flatMap {
+                    if case .continuous(let transforms) = $0.kind { return transforms }
+                    return nil
+                }
         )
-        return (interpolatedPositions, result.clicks)
+        return (interpolatedPositions, result.mouseButtonEvents)
     }
 
     // MARK: - Private

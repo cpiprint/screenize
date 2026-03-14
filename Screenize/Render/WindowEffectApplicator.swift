@@ -1,6 +1,7 @@
 import Foundation
 import CoreGraphics
 import CoreImage
+import SwiftUI
 
 /// Window effect applicator
 /// Applies rounded corners and a drop shadow
@@ -67,6 +68,10 @@ final class WindowEffectApplicator {
 
     // MARK: - Private Methods
 
+    static func maskFallbackImage(size: CGSize) -> CIImage {
+        TransparentBackgroundFallback.image(size: size)
+    }
+
     /// Apply rounded corners
     private func applyRoundedCorners(to image: CIImage, cornerRadius: CGFloat) -> CIImage {
         let bounds = image.extent
@@ -94,7 +99,7 @@ final class WindowEffectApplicator {
     private func createRoundedRectMask(size: CGSize, origin: CGPoint, cornerRadius: CGFloat) -> CIImage {
         // Validate the size
         guard size.width > 0, size.height > 0 else {
-            return CIImage.white
+            return Self.maskFallbackImage(size: size)
         }
 
         let width = Int(size.width)
@@ -110,7 +115,7 @@ final class WindowEffectApplicator {
             space: CGColorSpaceCreateDeviceGray(),
             bitmapInfo: CGImageAlphaInfo.none.rawValue
         ) else {
-            return CIImage.white.cropped(to: CGRect(origin: .zero, size: size))
+            return Self.maskFallbackImage(size: size)
         }
 
         // Black background (transparent = 0 in the mask)
@@ -119,17 +124,16 @@ final class WindowEffectApplicator {
 
         // White rounded rectangle (opaque = 1 in the mask)
         context.setFillColor(gray: 1, alpha: 1)
-        let path = CGPath(
+        let path = Path(
             roundedRect: CGRect(origin: .zero, size: size),
-            cornerWidth: cornerRadius,
-            cornerHeight: cornerRadius,
-            transform: nil
-        )
+            cornerRadius: cornerRadius,
+            style: .continuous
+        ).cgPath
         context.addPath(path)
         context.fillPath()
 
         guard let cgImage = context.makeImage() else {
-            return CIImage.white.cropped(to: CGRect(origin: .zero, size: size))
+            return Self.maskFallbackImage(size: size)
         }
 
         // Translate to match the original image's position
@@ -188,10 +192,5 @@ private extension CIImage {
     /// Transparent image
     static var clear: CIImage {
         CIImage(color: CIColor(red: 0, green: 0, blue: 0, alpha: 0))
-    }
-
-    /// White image
-    static var white: CIImage {
-        CIImage(color: CIColor(red: 1, green: 1, blue: 1, alpha: 1))
     }
 }

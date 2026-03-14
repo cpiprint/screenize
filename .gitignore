@@ -63,5 +63,7 @@ xcuserdata/
 tools
 release
 private-docs
+projects/
 
 __pycache__
+.worktrees/
